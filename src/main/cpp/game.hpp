@@ -23,14 +23,14 @@ class Game : public seasocks::WebSocket::Handler {
 		}
 
 		void onConnect(seasocks::WebSocket* connection) override {
-			if (player_idx == 2) {
+			if (_player_idx == 2) {
 				connection->send("Two players has already joined. Quitting...");
 				connection->close();
 				return;
 			} else {
 				Player* player = new Player();
 				player->connection = connection;
-				players[player_idx++] = std::move(player);
+				_players[_player_idx++] = std::move(player);
 				std::cout << "Connected: " << connection->getRequestUri()
 					<< " : " << seasocks::formatAddress(connection->getRemoteAddress())
 					<< "\nCredentials: " << *(connection->credentials()) << "\n";
@@ -54,28 +54,28 @@ class Game : public seasocks::WebSocket::Handler {
 			}
 			if (strlen(data) == 199) {
 				const std::string result = validateTable(data);
-				players[player_id]->connection->send(result.c_str());
+				_players[player_id]->connection->send(result.c_str());
 			}
 		}
 
 		void onDisconnect(seasocks::WebSocket* connection) override {
-			if (players[0]->connection == connection) {
-				delete players[0];
-				players[0] = std::move(players[1]);
-				player_idx = 0;
+			if (_players[0]->connection == connection) {
+				delete _players[0];
+				_players[0] = std::move(_players[1]);
+				_player_idx = 0;
 				std::cout << "Disconnected: " << connection->getRequestUri()
 					<< " : " << seasocks::formatAddress(connection->getRemoteAddress()) << "\n";
-			} else if (players[1]->connection == connection) {
-				delete players[1];
-				player_idx = 1;
+			} else if (_players[1]->connection == connection) {
+				delete _players[1];
+				_player_idx = 1;
 				std::cout << "Disconnected: " << connection->getRequestUri()
 					<< " : " << seasocks::formatAddress(connection->getRemoteAddress()) << "\n";
 			}
 		}
 
 	private:
-		int player_idx;
-		Player* players[2];
+		int _player_idx;
+		Player* _players[2];
 		seasocks::Server* _server;
 
 		void startServer() {
@@ -86,7 +86,7 @@ class Game : public seasocks::WebSocket::Handler {
 		}
 
 		void init() {
-			player_idx = 0;
+			_player_idx = 0;
 		}
 
 		std::string validateTable(const char* data) const {
@@ -105,9 +105,9 @@ class Game : public seasocks::WebSocket::Handler {
 		}
 
 		int getPlayerId(const seasocks::WebSocket* connection) const {
-			if (players[0]->connection == connection) {
+			if (_players[0]->connection == connection) {
 				return 0;
-			} else if (players[1]->connection == connection) {
+			} else if (_players[1]->connection == connection) {
 				return 1;
 			} else {
 				return -1;
