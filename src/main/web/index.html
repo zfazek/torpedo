@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <title>Torpedo</title>
+        <link rel="stylesheet" href="http://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.css">
+        <script src="//code.jquery.com/jquery-1.11.3.min.js"></script>
+        <script src="http://code.jquery.com/mobile/1.4.5/jquery.mobile-1.4.5.min.js"></script>
+    </head>
+    <style>
+        #canvas {
+            background-color: gray;
+            display: block;
+            border: 1px solid black;
+        }
+    </style>
+    <body>
+        <div data-role="page">
+            <button id="connect" onclick="connect()">Connect</button>
+            <button id="random" onclick="random_table()">Generate random table</button>
+            <button id="send" onclick="send_table()">Send table</button>
+            <button id="clear" onclick="init_table()">Clear table</button>
+            <br>
+            <br>
+            <canvas id="canvas" width="400" height="400"></canvas>
+            <pre id = "output"></pre>
+        </div>
+            <script src = "torpedo.js"></script>
+    </body>
+
+</html>

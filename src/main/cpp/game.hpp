@@ -1,6 +1,7 @@
 #pragma once
 
 #include "player.hpp"
+#include "state.hpp"
 
 #include "seasocks/PrintfLogger.h"
 #include "seasocks/Server.h"
@@ -17,6 +18,8 @@
 
 class Game : public seasocks::WebSocket::Handler {
     public:
+        typedef std::vector<int> Table;
+
         Game() {
             init();
             startServer();
@@ -37,29 +40,6 @@ class Game : public seasocks::WebSocket::Handler {
             }
         }
 
-        void onData(seasocks::WebSocket* connection, const char* data) override {
-            if (0 == strcmp("die", data)) {
-                _server->terminate();
-                return;
-            }
-            if (0 == strcmp("close", data)) {
-                std::cout << "Closing..\n";
-                connection->close();
-                std::cout << "Closed.\n";
-                return;
-            }
-            const int player_id = getPlayerId(connection);
-            if (player_id < 0) {
-                return;
-            }
-            // printf("%s\n", data);
-            if (strlen(data) == 2 * Player::SIZE * Player::SIZE - 1) {
-                setTable(data);
-                const std::string result = validateTable();
-                _players[player_id]->connection->send(result.c_str());
-            }
-        }
-
         void onDisconnect(seasocks::WebSocket* connection) override {
             if (_players[0]->connection == connection) {
                 if (_players[1]) {
@@ -77,17 +57,58 @@ class Game : public seasocks::WebSocket::Handler {
             }
         }
 
+        void onData(seasocks::WebSocket* connection, const char* data) override {
+            if (0 == strcmp("die", data)) {
+                _server->terminate();
+                return;
+            }
+            if (0 == strcmp("close", data)) {
+                std::cout << "Closing..\n";
+                connection->close();
+                std::cout << "Closed.\n";
+                return;
+            }
+            const int player_id = getPlayerId(connection);
+            if (player_id < 0) {
+                return;
+            }
+            if (strlen(data) > 0 && data[0] == 'v') {
+                Table table = getTable(data);
+                const std::string result = "v" + validateTable(table);
+                _players[player_id]->connection->send(result.c_str());
+                return;
+            }
+            // printf("%s\n", data);
+            if (isTableSent(data)) {
+                if (_players[player_id] && _players[player_id]->hasValidTable) {
+                    return;
+                }
+                Table table = getTable(data);
+                const std::string result = validateTable(table);
+                _players[player_id]->connection->send(result.c_str());
+                if (result == "OK") {
+                    _players[player_id]->table = table;
+                    _players[player_id]->hasValidTable = true;
+                    const int otherPlayerId = 1 - player_id;
+                    if (_players[otherPlayerId] && _players[otherPlayerId]->hasValidTable) {
+                        _state = State::GAME;
+                    }
+                }
+                return;
+            }
+        }
+
     private:
         const std::string OK = "OK";
-        const std::vector<int> offsets = {-Player::SIZE, -1, 1, Player::SIZE};
+        const std::vector<int> offsets1 = {-Player::SIZE, -1, 1, Player::SIZE};
+        const std::vector<int> offsets2 = {-Player::SIZE - 1, Player::SIZE + 1,
+            Player::SIZE - 1, Player::SIZE + 1};
         const std::vector<int> refShips = {1, 1, 1, 1, 2, 2, 2, 3, 3, 4};
 
-        std::vector<int> _table;
         int _player_idx;
         std::shared_ptr<Player> _players[2];
         seasocks::Server* _server;
-        int _shipLength;
-        int _shipIdx;
+        State _state;
 
         void startServer() {
             auto logger = std::make_shared<seasocks::PrintfLogger>(seasocks::Logger::Level::Debug);
@@ -98,21 +119,31 @@ class Game : public seasocks::WebSocket::Handler {
 
         void init() {
             _player_idx = 0;
-            _table.clear();
-        }
-
-        void setTable(const char* data) {
-            _table.clear();
-            for (unsigned i = 0; i < strlen(data); ++i) {
-                if (data[i] == '1') {
-                    _table.push_back(1);
-                } else if (data[i] == '0') {
-                    _table.push_back(0);
+            _state = State::INIT;
+            for (unsigned i = 0; i < 2; ++i) {
+                if (_players[i]) {
+                    _players[i]->init();
                 }
             }
         }
 
-        bool isValidPosition(const int idx, const int offset) {
+        bool isTableSent(const char* data) const {
+            return strlen(data) == 2 * Player::SIZE * Player::SIZE - 1;
+        }
+
+        Table getTable(const char* data) const {
+            Table table;
+            for (unsigned i = 0; i < strlen(data); ++i) {
+                if (data[i] == '1') {
+                    table.push_back(1);
+                } else if (data[i] == '0') {
+                    table.push_back(0);
+                }
+            }
+            return table;
+        }
+
+        bool isValidPosition(const int idx, const int offset) const {
             const int y1 = idx / Player::SIZE;
             const int x1 = idx - Player::SIZE * y1;
             const int idx2 = idx + offset;
@@ -128,29 +159,39 @@ class Game : public seasocks::WebSocket::Handler {
                 std::abs(y2 - y1) < 2;
         }
 
-        void scanTable(int idx) {
-            if (_table[idx] != 1) {
+        void scanTable(Table& table, int idx, const int shipIdx, int& shipLength) const {
+            if (table[idx] != 1) {
                 return;
             }
-            ++_shipLength;
-            _table[idx] = _shipIdx;
-            for (const int offset : offsets) {
+            ++shipLength;
+            table[idx] = shipIdx;
+            for (const int offset : offsets1) {
                 if (isValidPosition(idx, offset)) {
-                    scanTable(idx + offset);
+                    scanTable(table, idx + offset, shipIdx, shipLength);
                 }
             }
         }
 
-        std::string parseTable() {
+        std::string parseTable(Table& table) const {
             std::vector<int> ships;
-            _shipIdx = 2;
-            for (unsigned i = 0; i < _table.size(); ++i) {
-                if (_table[i] == 1) {
-                    _shipLength = 0;
-                    scanTable(i);
-                    // std::cout << i << " " << _shipIdx << " " << _shipLength << std::endl;
-                    ships.push_back(_shipLength);
-                    ++_shipIdx;
+            int shipIdx = 2;
+            for (unsigned i = 0; i < table.size(); ++i) {
+                if (table[i] == 1) {
+                    int shipLength = 0;
+                    scanTable(table, i, shipIdx, shipLength);
+                    // std::cout << i << " " << shipIdx << " " << shipLength << std::endl;
+                    ships.push_back(shipLength);
+                    ++shipIdx;
+                }
+            }
+            for (unsigned i = 0; i < table.size(); ++i) {
+                if (table[i] != 0) {
+                    for (const int offset : offsets2) {
+                        if (isValidPosition(i, offset)&&  table[i + offset] != 0 && table[i] !=
+                                table[i+ offset]) {
+                                return "Osszeero hajok";
+                        }
+                    }
                 }
             }
             std::sort(ships.begin(), ships.end());
@@ -167,7 +208,8 @@ class Game : public seasocks::WebSocket::Handler {
                 std::string error;
                 for (const int s : ships) {
                     if (counters[s] != refCounters[s]) {
-                        error = std::to_string(s) + "-es hajobol " + std::to_string(counters[s]) + " van " + std::to_string(refCounters[s]) + " helyet. ";
+                        error = std::to_string(s) + "-es hajobol " + std::to_string(counters[s]) +
+                            " van " + std::to_string(refCounters[s]) + " helyet. ";
                         errors.insert(error);
                     }
                 }
@@ -186,19 +228,24 @@ class Game : public seasocks::WebSocket::Handler {
             return OK;
         }
 
-        std::string validateTable() {
+        std::string validateTable(Table& table) const {
             std::string result;
-            result = parseTable();
+            result = parseTable(table);
             if (result != OK) {
                 return result;
+            }
+            for (unsigned i = 0; i < table.size(); ++i) {
+                if (table[i] > 0) {
+                    table[i] = 1;
+                }
             }
             return OK;
         }
 
         int getPlayerId(const seasocks::WebSocket* connection) const {
-            if (_players[0]->connection == connection) {
+            if (_players[0] && _players[0]->connection == connection) {
                 return 0;
-            } else if (_players[1]->connection == connection) {
+            } else if (_players[1] && _players[1]->connection == connection) {
                 return 1;
             } else {
                 return -1;
