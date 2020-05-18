@@ -12,12 +12,17 @@ class Player {
 
         static constexpr int SIZE = 10;
         seasocks::WebSocket* connection;
-        std::vector<int> table;
+        std::vector<int> ownTable;
+        std::vector<int> otherTable;
         bool hasValidTable;
 
         void init() {
             hasValidTable = false;
-            table.clear();
+            ownTable.clear();
+            otherTable.clear();
+            for (unsigned i = 0; i < SIZE * SIZE; ++i) {
+                otherTable.push_back(0);
+            }
         }
 
     private:

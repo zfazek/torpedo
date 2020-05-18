@@ -1,4 +1,7 @@
 var button_connect = document.getElementById("connect");
+var button_random = document.getElementById("random");
+var button_send = document.getElementById("send");
+var button_clear = document.getElementById("clear");
 var output = document.getElementById("output");
 var socket;
 var canvas = document.getElementById("canvas");
@@ -7,13 +10,19 @@ var ctx = canvas.getContext("2d");
 var canvasLeft = canvas.offsetLeft + canvas.clientLeft;
 var canvasTop = canvas.offsetTop + canvas.clientTop;
 
-var table = [];
+var own_table = [];
+var other_table = [];
+var can_click = false;
+var shoot = false;
+var end = false;
+var random = false;
 var SIZE = 10;
 
-init_game();
+set_buttons_disabled(true);
+init_table();
 
 canvas.addEventListener('click', function(event) {
-    if (socket && socket.readyState == WebSocket.OPEN) {
+    if (socket && socket.readyState == WebSocket.OPEN && can_click) {
         var rect = canvas.getBoundingClientRect();
         var scaleX = canvas.width / rect.width;
         var scaleY = canvas.height / rect.height;
@@ -22,39 +31,120 @@ canvas.addEventListener('click', function(event) {
         var x = Math.floor(mouseX / (canvas.width / SIZE));
         var y = Math.floor(mouseY / (canvas.height / SIZE));
         var idx = y * SIZE + x;
-        var elem = table[idx];
-        table[idx] = 1 - elem;
-        draw();
+        if (shoot) {
+            if (other_table[idx] == 0) {
+                can_click = false;
+                socket.send(idx);
+                output.innerText = "";
+            }
+        } else {
+            var elem = own_table[idx];
+            own_table[idx] = 1 - elem;
+            draw(own_table);
+        }
     }
 }, false);
 
 function onopen() {
     button_connect.innerText = "Close";
-    output.innerHTML = "";
-    draw();
+    init_game();
 };
 
 function onclose() {
     button_connect.innerText = "Connect";
-    output.innerHTML = "";
-    draw();
+    can_click = false;
+    shoot = false;
+    set_buttons_disabled(true);
 }
 
 function onmessage(e) {
-    if (e.data[0] == 'v') {
-        if (e.data[1] == 'O' && e.data[2] == 'K') {
-            draw();
-            return;
-        }
-        random_table();
+    if (e.data == "OK") {
+        can_click = false;
+        set_buttons_disabled(true);
+        output.innerHTML = e.data;
         return;
     }
-    output.innerHTML = e.data + "\n";
-    draw();
-};
+    if (e.data == "You missed!") {
+        can_click = false;
+        set_buttons_disabled(true);
+        draw(own_table);
+        output.innerHTML = e.data;
+        return;
+    }
+    if (e.data == "You won!") {
+        draw(other_table);
+        can_click = false;
+        end = true;
+        output.innerHTML = e.data;
+        return;
+    }
+    if (e.data == "You lost!") {
+        draw(other_table);
+        can_click = false;
+        end = true;
+        output.innerHTML = e.data;
+        return;
+    }
+    if (e.data == "Shoot!") {
+        draw(other_table);
+        can_click = true;
+        shoot = true;
+        output.innerHTML = e.data;
+        return;
+    }
+    if (e.data.length > 0 && e.data[0] >= 'A' && e.data[0] <= 'Z') {
+        draw(own_table);
+        can_click = true;
+        output.innerHTML = e.data;
+        return;
+    }
+    if (end && e.data.length == SIZE * SIZE) {
+        console.log(other_table);
+        console.log(e.data);
+        for (var i = 0; i < e.data.length; i++) {
+            if (other_table[i] == 0) {
+                other_table[i] = parseInt(e.data[i]);
+            }
+        }
+        draw(other_table);
+        return;
+    }
+    if (random && e.data.length == SIZE * SIZE) {
+        own_table = [];
+        for (var i = 0; i < e.data.length; i++) {
+            own_table.push(parseInt(e.data[i]));
+        }
+        random = false;
+        draw(own_table);
+        return;
+    }
+    if (!end && e.data.length == SIZE * SIZE) {
+        other_table = [];
+        for (var i = 0; i < e.data.length; i++) {
+            other_table.push(parseInt(e.data[i]));
+        }
+        return;
+    }
+    if (e.data.length > 0 && e.data.length < 4) {
+        if (e.data[0] == 'm') {
+            can_click = false;
+            var idx = parseInt(e.data.slice(1));
+            output.innerHTML = "He/she missed";
+            own_table[idx] = 2;
+            draw(own_table);
+            return;
+        }
+        output.innerText = "You got a hit";
+        can_click = false;
+        var idx = parseInt(e.data);
+        own_table[idx] = 5;
+        draw(own_table);
+        return;
+    }
+}
 
 function init_table() {
-    table = [
+    own_table = [
         0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,
@@ -66,7 +156,7 @@ function init_table() {
         0,0,0,0,0,0,0,0,0,0,
         0,0,0,0,0,0,0,0,0,0,
     ];
-    draw();
+    draw(own_table);
 }
 
 function isIdxInindices(indices, idx) {
@@ -78,37 +168,38 @@ function isIdxInindices(indices, idx) {
     return false;
 }
 
-function random_table() {
-    table = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0];
-    /*
-    var counter = 20;
-    var indices = [];
-    while (counter > 0) {
-        var idx = Math.floor(Math.random() * SIZE * SIZE);
-        if (!isIdxInindices(indices, idx)) {
-            indices.push(idx);
-            counter--;
-        }
-    }
-    init_table();
-    for (var i = 0; i < indices.length; i++) {
-        table[indices[i]] = 1;
-    }
-    */
-    draw();
-    if (socket && socket.readyState == WebSocket.OPEN) {
-        socket.send("v" + table.toString());
-    }
+function random_own_table() {
+    random = true;
+    socket.send("random");
+}
+
+function set_buttons_disabled(flag) {
+    button_random.disabled = flag;
+    button_send.disabled = flag;
+    button_clear.disabled = flag;
 }
 
 function init_game() {
-    init_table();
+    for (var i = 0; i < SIZE * SIZE; i++) {
+        other_table[i] = 0;
+        if (own_table[i] > 0) {
+            own_table[i] = 1;
+        } else {
+            own_table[i] = 0;
+        }
+    }
+    can_click = true;
+    shoot = false;
+    end = false;
+    random = false;
+    set_buttons_disabled(false);
+    output.innerText = "";
+    draw(own_table);
 }
 
 function send_table() {
-    draw();
     if (socket && socket.readyState == WebSocket.OPEN) {
-        socket.send(table.toString());
+        socket.send(own_table.toString());
     }
 }
 
@@ -120,10 +211,12 @@ function connect() {
         socket.addEventListener('close', onclose);
     } else if (button_connect.innerText == "Close") {
         socket.send("close");
+        set_buttons_disabled(true);
+        output.innerText = "";
     }
 }
 
-function draw() {
+function draw(table) {
     var size = canvas.width / SIZE;
     for (var i = 0; i < SIZE; i++) {
         for (var j = 0; j < SIZE; j++) {
@@ -131,14 +224,23 @@ function draw() {
             if (socket && socket.readyState == WebSocket.OPEN) {
                 ctx.strokeStyle = "black";
             } else {
-                ctx.strokeStyle = "gray";
+//                ctx.strokeStyle = "gray";
+                ctx.strokeStyle = "black";
             }
             ctx.rect(j * size, i * size, size, size);
             ctx.strokeRect(j * size, i * size, size, size);
             if (table[i * SIZE + j] == 0) {
                 ctx.fillStyle = "gray";
-            } else {
+            } else if (table[i * SIZE + j] == 1) {
                 ctx.fillStyle = "blue";
+            } else if (table[i * SIZE + j] == 2) {
+                ctx.fillStyle = "black";
+            } else if (table[i * SIZE + j] == 3) {
+                ctx.fillStyle = "green";
+            } else if (table[i * SIZE + j] == 4) {
+                ctx.fillStyle = "yellow";
+            } else if (table[i * SIZE + j] >= 5) {
+                ctx.fillStyle = "red";
             }
             ctx.fill();
         }

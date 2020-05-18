@@ -9,11 +9,13 @@
 #include "seasocks/WebSocket.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 class Game : public seasocks::WebSocket::Handler {
@@ -41,20 +43,21 @@ class Game : public seasocks::WebSocket::Handler {
         }
 
         void onDisconnect(seasocks::WebSocket* connection) override {
-            if (_players[0]->connection == connection) {
-                if (_players[1]) {
-                    _players[0] = std::move(_players[1]);
-                    _player_idx = 1;
-                } else {
-                    _player_idx = 0;
-                }
-                std::cout << "Disconnected: " << connection->getRequestUri()
-                    << " : " << seasocks::formatAddress(connection->getRemoteAddress()) << "\n";
-            } else if (_players[1]->connection == connection) {
-                _player_idx = 1;
-                std::cout << "Disconnected: " << connection->getRequestUri()
-                    << " : " << seasocks::formatAddress(connection->getRemoteAddress()) << "\n";
+            std::cout << "Disconnected: " << connection->getRequestUri()
+                << " : " << seasocks::formatAddress(connection->getRemoteAddress()) << "\n";
+            const int player_id = getPlayerId(connection);
+            const int otherPlayerId = 1 - player_id;
+            if (player_id < 0) {
+                return;
             }
+            if (_players[otherPlayerId] && _players[otherPlayerId]->connection) {
+                _players[otherPlayerId]->connection->send("Other player exited. Quitting...");
+                _players[otherPlayerId]->connection->close();
+            }
+            _players[player_id].reset();
+            _player_idx = 0;
+            _state = State::INIT;
+
         }
 
         void onData(seasocks::WebSocket* connection, const char* data) override {
@@ -72,14 +75,49 @@ class Game : public seasocks::WebSocket::Handler {
             if (player_id < 0) {
                 return;
             }
-            if (strlen(data) > 0 && data[0] == 'v') {
-                Table table = getTable(data);
-                const std::string result = "v" + validateTable(table);
-                _players[player_id]->connection->send(result.c_str());
+            if (_state == State::GAME && strlen(data) < 3) {
+                const int idx = std::atoi(data);
+                if (idx >= 0 && idx < Player::SIZE * Player::SIZE) {
+                    if (_players[1 - _player_to_move]->ownTable[idx] == 1) {
+                        _players[1 - _player_to_move]->connection->send(data);
+                        _players[_player_to_move]->otherTable[idx] = 1;
+                        std::string msg = "";
+                        if (isSunk(idx)) {
+                            std::set<int> indicesOfSameShip = {idx};
+                            setIndicesOfSameShip(_players[_player_to_move]->otherTable, idx, indicesOfSameShip);
+                            for (const int i : indicesOfSameShip) {
+                                _players[_player_to_move]->otherTable[i] = 5;
+                            }
+                        }
+                        _players[_player_to_move]->connection->send(tableToString(_players[_player_to_move]->otherTable));
+                        _players[_player_to_move]->connection->send("Shoot!");
+                    } else {
+                        _players[_player_to_move]->connection->send("You missed!");
+                        _players[_player_to_move]->otherTable[idx] = 2;
+                        _players[_player_to_move]->connection->send(tableToString(_players[_player_to_move]->otherTable));
+                        const std::string str = "m" + std::string(data);
+                        _players[1 - _player_to_move]->connection->send(str);
+                        std::this_thread::sleep_for(std::chrono::seconds(2));
+                        _players[1 - _player_to_move]->connection->send(tableToString(_players[1 - _player_to_move]->otherTable));
+                        _players[1 - _player_to_move]->connection->send("Shoot!");
+                        _player_to_move = 1 - _player_to_move;
+                    }
+                }
+                const int player_won = getPlayerWon();
+                if (player_won == -1) {
+                    return;
+                }
+                _state = State::END;
+                _players[player_won]->connection->send("You won!");
+                _players[1 - player_won]->connection->send("You lost!");
+                for (unsigned i = 0; i < 2; ++i) {
+                    _players[i]->connection->send(tableToString(_players[1 - i]->ownTable));
+                    _players[i]->connection->close();
+                }
                 return;
             }
             // printf("%s\n", data);
-            if (isTableSent(data)) {
+            if (_state == State::INIT && isTableSent(data)) {
                 if (_players[player_id] && _players[player_id]->hasValidTable) {
                     return;
                 }
@@ -87,13 +125,20 @@ class Game : public seasocks::WebSocket::Handler {
                 const std::string result = validateTable(table);
                 _players[player_id]->connection->send(result.c_str());
                 if (result == "OK") {
-                    _players[player_id]->table = table;
+                    _players[player_id]->ownTable = table;
                     _players[player_id]->hasValidTable = true;
                     const int otherPlayerId = 1 - player_id;
                     if (_players[otherPlayerId] && _players[otherPlayerId]->hasValidTable) {
                         _state = State::GAME;
+                        _players[_player_to_move]->connection->send(tableToString(_players[_player_to_move]->otherTable));
+                        _players[_player_to_move]->connection->send("Shoot!");
                     }
                 }
+                return;
+            }
+            if (_state == State::INIT && strcmp("random", data) == 0) {
+                std::vector<int> randomTable = createRandomTable();
+                _players[player_id]->connection->send(tableToString(randomTable));
                 return;
             }
         }
@@ -109,6 +154,7 @@ class Game : public seasocks::WebSocket::Handler {
         std::shared_ptr<Player> _players[2];
         seasocks::Server* _server;
         State _state;
+        int _player_to_move;
 
         void startServer() {
             auto logger = std::make_shared<seasocks::PrintfLogger>(seasocks::Logger::Level::Debug);
@@ -118,7 +164,9 @@ class Game : public seasocks::WebSocket::Handler {
         }
 
         void init() {
+            srand(time(0));
             _player_idx = 0;
+            _player_to_move = 0;
             _state = State::INIT;
             for (unsigned i = 0; i < 2; ++i) {
                 if (_players[i]) {
@@ -172,27 +220,34 @@ class Game : public seasocks::WebSocket::Handler {
             }
         }
 
-        std::string parseTable(Table& table) const {
+        std::string parseTable(Table& table, const bool checkOnlyOverlapping = false) const {
             std::vector<int> ships;
             int shipIdx = 2;
             for (unsigned i = 0; i < table.size(); ++i) {
                 if (table[i] == 1) {
                     int shipLength = 0;
                     scanTable(table, i, shipIdx, shipLength);
-                    // std::cout << i << " " << shipIdx << " " << shipLength << std::endl;
                     ships.push_back(shipLength);
                     ++shipIdx;
                 }
             }
+            std::vector<int> offsets = offsets2;
+            if (checkOnlyOverlapping) {
+                offsets.insert(offsets.end(), offsets1.begin(), offsets1.end());
+            }
             for (unsigned i = 0; i < table.size(); ++i) {
                 if (table[i] != 0) {
-                    for (const int offset : offsets2) {
-                        if (isValidPosition(i, offset)&&  table[i + offset] != 0 && table[i] !=
-                                table[i+ offset]) {
-                                return "Osszeero hajok";
+                    for (const int offset : offsets) {
+                        if (isValidPosition(i, offset)) {
+                            if (table[i + offset] != 0 && table[i] != table[i + offset]) {
+                                return "Overlapping ships";
+                            }
                         }
                     }
                 }
+            }
+            if (checkOnlyOverlapping) {
+                return OK;
             }
             std::sort(ships.begin(), ships.end());
             if (ships != refShips) {
@@ -208,14 +263,18 @@ class Game : public seasocks::WebSocket::Handler {
                 std::string error;
                 for (const int s : ships) {
                     if (counters[s] != refCounters[s]) {
-                        error = std::to_string(s) + "-es hajobol " + std::to_string(counters[s]) +
-                            " van " + std::to_string(refCounters[s]) + " helyet. ";
+                        std::string plural = "";
+                        if (counters[s] > 1) {
+                            plural = "s";
+                        }
+                        error = "You have " + std::to_string(counters[s]) + " ship" + plural + " instead of "
+                            + std::to_string(refCounters[s]) + " in size " + std::to_string(s) + ". ";
                         errors.insert(error);
                     }
                 }
                 for (const int s : refShips) {
                     if (counters[s] == 0) {
-                        error = "Nincs " + std::to_string(s) + "-es hajo. ";
+                        error = "No ship in size " + std::to_string(s) + ". ";
                         errors.insert(error);
                     }
                 }
@@ -242,6 +301,40 @@ class Game : public seasocks::WebSocket::Handler {
             return OK;
         }
 
+        void setIndicesOfSameShip(const Table& table, const int idx, std::set<int>& indicesOfSameShip) const {
+            for (const int offset : offsets1) {
+                if (isValidPosition(idx, offset) && table[idx + offset] == 1 &&
+                        indicesOfSameShip.find(idx + offset) == indicesOfSameShip.end()) {
+                    indicesOfSameShip.insert(idx + offset);
+                    setIndicesOfSameShip(table, idx + offset, indicesOfSameShip);
+                }
+            }
+        }
+
+        bool isSunk(const int idx) const {
+            const int other_player = 1 - _player_to_move;
+            std::set<int> indicesOfSameShip1 = {idx};
+            setIndicesOfSameShip(_players[other_player]->ownTable, idx, indicesOfSameShip1);
+            std::set<int> indicesOfSameShip2 = {idx};
+            setIndicesOfSameShip(_players[_player_to_move]->otherTable, idx, indicesOfSameShip2);
+            return indicesOfSameShip1 == indicesOfSameShip2;
+        }
+
+        int getPlayerWon() const {
+            for (unsigned i = 0; i < 2; ++i) {
+                int counter = 0;
+                for (const int e : _players[i]->otherTable) {
+                    if (e == 1 || e == 5) {
+                        ++counter;
+                    }
+                    if (counter == 20) {
+                        return i;
+                    }
+                }
+            }
+            return -1;
+        }
+
         int getPlayerId(const seasocks::WebSocket* connection) const {
             if (_players[0] && _players[0]->connection == connection) {
                 return 0;
@@ -250,6 +343,68 @@ class Game : public seasocks::WebSocket::Handler {
             } else {
                 return -1;
             }
+        }
+
+        std::string tableToString(const Table& table) const {
+            std::string ret;
+            for (const int e : table) {
+                ret += std::to_string(e);
+            }
+            return ret;
+        }
+
+        Table createRandomTable() const {
+            Table table;
+            for (int i = 0; i < Player::SIZE * Player::SIZE; ++i) {
+                table.push_back(0);
+            }
+            const std::vector<int> refShips = {4, 3, 3, 2, 2, 2, 1, 1, 1, 1};
+            int limit = 99;
+            int shipIdx = 1;
+            for (const int shipLength : refShips) {
+                ++shipIdx;
+                bool fail;
+                do {
+                    fail = false;
+                    const int idx = rand() % (Player::SIZE * Player::SIZE);
+                    if (table[idx] != 0) {
+                        fail = true;
+                        continue;
+                    }
+                    --limit;
+                    std::vector<int> offsets = offsets1;
+                    std::random_shuffle(offsets.begin(), offsets.end());
+                    for (const int offset : offsets) {
+                        fail = false;
+                        Table lastTable = table;
+                        for (int i = 0; i < shipLength; ++i) {
+                            if (table[idx + i * offset] == 0 && isValidPosition(idx + (i - 1) * offset, offset)) {
+                                table[idx + i * offset] = shipIdx;
+                                Table tempTable = table;
+                                const std::string result = parseTable(tempTable, true);
+                                if (result != OK) {
+                                    table = lastTable;
+                                    fail = true;
+                                    break;
+                                }
+                            } else {
+                                table = lastTable;
+                                fail = true;
+                                break;
+                            }
+                        }
+                        if (!fail) {
+                            break;
+                        }
+                    }
+                } while(fail && limit > 0);
+            }
+            for (unsigned i = 0; i < Player::SIZE * Player::SIZE; ++i) {
+                if (table[i] > 0) {
+                    table[i] = 1;
+                }
+            }
+            return table;
         }
 };
 
