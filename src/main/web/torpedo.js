@@ -182,7 +182,7 @@ function set_buttons_disabled(flag) {
 function init_game() {
     for (var i = 0; i < SIZE * SIZE; i++) {
         other_table[i] = 0;
-        if (own_table[i] > 0) {
+        if (own_table[i] == 1 || own_table[i] == 5) {
             own_table[i] = 1;
         } else {
             own_table[i] = 0;
