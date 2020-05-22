@@ -1,2 +1,5 @@
+torpedo
 tags
+*.o
+.depend
 build/
